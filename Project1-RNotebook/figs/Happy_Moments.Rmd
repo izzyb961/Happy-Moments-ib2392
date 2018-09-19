@@ -1,0 +1,411 @@
+---
+title: "Happy Moments"
+author: "Izzy Beers, ib2392"
+date: "9/20/2018"
+output: html_document
+---
+
+```{r,,message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+
+library(tidyverse)
+library(tidytext)
+library(DT)
+library(scales)
+library(wordcloud2)
+library(gridExtra)
+library(ngram)
+library(shiny) 
+library(knitr)
+library(cowplot)
+library(tm)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+
+
+hm_data = read_csv("GitHub/Project1-RNotebook/output/processed_moments.csv")
+urlfile='https://raw.githubusercontent.com/rit-public/HappyDB/master/happydb/data/demographic.csv'
+demo_data = read_csv(urlfile)
+
+hm_data = hm_data %>%
+  inner_join(demo_data, by = "wid") %>%
+  select(wid,
+         original_hm,
+         gender, 
+         marital, 
+         parenthood,
+         reflection_period,
+         age, 
+         country, 
+         ground_truth_category, 
+         text) %>%
+  mutate(count = sapply(hm_data$text, wordcount)) %>%
+  filter(gender %in% c("m", "f")) %>%
+  filter(marital %in% c("single", "married")) %>%
+  filter(parenthood %in% c("n", "y")) %>%
+  filter(reflection_period %in% c("24h", "3m")) %>%
+  mutate(reflection_period = fct_recode(reflection_period, 
+                                        months_3 = "3m", hours_24 = "24h"))
+
+#a lot of the original moments were duplicated.  In the following line, I try to remove as many as I can.
+hm_data=hm_data[!duplicated(hm_data$original_hm),]
+
+#some ages say 2 or 2.0, or 3 or 3.0, which I think were supposed to be 20 or 30 so I change those:
+hm_data$age[which(as.numeric(hm_data$age)==2)]=20
+hm_data$age[which(as.numeric(hm_data$age)==3)]=30
+```
+Most days, people experience many different events, both social and individual.  People may go to work or go out with their friends, but they probably also have some alone time at certain points throughout the day, whether they're reading the newspaper, watching TV, or going to the grocery store.  If Amazon asked you to report a happy moment that happened to you in the past 24 hours, there are probably many different moments that you can choose from, both social and individual. However, you can't report every single moment that happened throughout the day, so you have to choose the moment that was the most enjoyable or the most memorable. What types of moments do people typically choose?  Is there a relationship between a person's demographic and the types of moments they choose to report?  What are some of the most common individual and social activities that people talk about? 
+
+For my analysis of these happy moments, I was interested in categorizing these moments based on whether it was mainly a social event or an individual event. I was able to come up with a pattern for R to follow to classify a moment as an individual or social moment, while minimizing the amount of "false negatives" and "false positives".  Now that each moment is classified, these questions can be answered.   
+
+
+###Section 1: What Does the Data Say About Social and Individual Moments?  Which Are More Common, and What Are Some of the Most Common Words and Expressions in Each?
+
+```{r, echo=FALSE}
+
+
+#import the list of all the boy and girl names:
+names=read.csv("GitHub/Project1-RNotebook/output/names.csv",header=FALSE) 
+
+#change names from factor to string:
+names=sapply(names,as.character) 
+
+#using analysis of word and bigram counts and just everyday knowledge, here is a compiled list of words that could indicate a social event:  
+#The ones that use regular expressions instead of a straightforward quote are supposed to generalize: in law/inlaw/in-law, and ___-year-old/___ year old, where ____ can be written as a number or a word and be separated by a space or a hyphen.
+social_words=c("family","friend","together","people","girlfriend","boyfriend","brother","sister","daughter","\\bson\\b","mother","father","\\bmom\\b","\\bmommy\\b","\bbdad\bb","\\bdaddy\\b","husband","wife","aunt","uncle","girl","guy","niece","nephew","fiance","parent","coworker","cousin","grandparent","grandmother","grandfather","grandma","grandpa","relative","person","partner","neighbor","neighbour","classmates","sibling","spouse","chat","party","acquaintance","date","roommate","grandson","granddaughter","soulmate","twin","in[[:space:]]*[[:punct:]]*law","child", "kid","kids","my [0-9A-Za-z]+[[:punct:]]*[[:space:]]*year[[:punct:]]*[[:space:]]*old","\\bmate\\b","colleague","buddy","buddies","\\bcrush\\b","freind","\\blover\\b")
+
+#now search through the dataset and save all moments that have a name from the list of names that we have, ignoring capital or lowercase.  A list of indices will be saved in names_matches_ignore_case.
+
+func=function(input)
+{
+    string=paste("\\b",input,"\\b",sep="")
+    return(grep(pattern=string,x=hm_data$original_hm,ignore.case=TRUE))
+}
+#names_matches_ignore_case=sapply(names, func)
+#names_matches_ignore_case=as.numeric(unlist(names_matches_ignore_case))
+#write.csv(names_matches_ignore_case,"Github/Project1-RNotebook/output/name_matches.csv",row.names=FALSE)
+
+#To make running it go faster, I ran lines 79 to 85 once and then just saved the result using line 86, and then each time I ran the code going forward, I would just run line 89.  But if you would like to run it from scratch, uncomment lines 79 to 85, and run those instead of line 89.  
+names_matches_ignore_case=unique(as.numeric(unlist(read.csv("Github/Project1-RNotebook/output/name_matches.csv"))))
+#"unique" is used because if a moment has more than one name in it, then it is counted more than once, but we just want the list of unique indices that contain names.
+
+#now search through the dataset and compile a list of all happy moments that include one of the social words from the social_words vector. Save the indices:
+social_words_matches=c()
+for (i in 1:length(social_words))
+{
+
+    social_words_matches=c(social_words_matches,grep(social_words[i],hm_data$original_hm,ignore.case=TRUE))
+}
+
+#Now search through for all moments that have "we" in it, and save the indices:
+we=grep("\\bwe\\b",hm_data$original_hm,ignore.case=TRUE) #all statements that include "we"
+
+#Search through for all moments that have "and I" in it, and save the indices: 
+and_i=grep("\\band\\b \\bi\\b[^']+.]*",hm_data$original_hm,ignore.case=TRUE) #all statements that include "and I"
+
+#Search through for all moments that have "with" in it, and save the indices:  
+with=grep("\\bwith\\b",hm_data$original_hm,ignore.case=TRUE) #all statements that include "with"
+
+#Search through for all moments that have "meet/met/meeting" in it, and save the indices: 
+meet=union(union(grep("\\bmeet\\b",hm_data$original_hm,ignore.case=TRUE),grep("\\bmet\\b",hm_data$original_hm,ignore.case=TRUE)),grep("\\bmeeting\\b",hm_data$original_hm,ignore.case=TRUE)) #all statements that include "meet" or "met" or "meeting"
+```
+
+
+```{r, echo=FALSE,results='hide'}
+#Here are some scenarios that I ran to do my analysis.  But only the ones that were saved into a variable name were used in the final output:
+
+#statements that include "we" but no reference to social words.  This gave me an idea of some moments that might say we but don't mean they're social, for example, something like "I went to go visit the town we grew up in"
+setdiff(hm_data$original_hm[we],hm_data$original_hm[social_words_matches]) 
+
+#statements that include "and I" but no reference to social words.  Gave me an idea of many moments that say "and I" but are probably not social, like "I got an A and I am very happy".  The social ones would probably be like "my brother and I", or "John and I"
+setdiff(hm_data$original_hm[and_i],hm_data$original_hm[social_words_matches]) 
+
+#statements that use ((at least one of "meet","with", "and I", or "we"), AND a person's name), OR (a social word).  Ended up being the pattern I used to classify a social moment:
+social_moments=union(intersect(union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet])),hm_data$original_hm[names_matches_ignore_case]),hm_data$original_hm[social_words_matches])
+
+#same as above except this stores the indices instead of the moments themselves:
+social_moments_indices=union(intersect(union(with,union(union(and_i,we),meet)),names_matches_ignore_case),social_words_matches)
+
+#stores all moments that were not classified as a social moment above: 
+not_social_moments=setdiff(hm_data$original_hm,union(intersect(union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet])),hm_data$original_hm[names_matches_ignore_case]),hm_data$original_hm[social_words_matches]))
+
+#same as above except stores the indices instead of the moments themselves:
+not_social_moments_indices=setdiff(1:nrow(hm_data),union(intersect(union(with,union(union(and_i,we),meet)),names_matches_ignore_case),social_words_matches))
+
+#statements that say "we","with","and I", or "meet" but are not classified as social moments.  Allows me to do a spot check to make sure I'm not missing too many of these that should be social moments but were incorrectly classified.  
+setdiff(intersect(hm_data$original_hm,union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet]))),union(intersect(union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet])),hm_data$original_hm[names_matches_ignore_case]),hm_data$original_hm[social_words_matches])) 
+
+#statements that include "we" but are not classified as social moments.  Allows me to do a spot check specifically for "we" and see if there were a lot misclassified.  
+setdiff(intersect(hm_data$original_hm,hm_data$original_hm[we]),union(intersect(union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet])),hm_data$original_hm[names_matches_ignore_case]),hm_data$original_hm[social_words_matches])) 
+
+#reference to a name without it being classified as a social moment:
+#basically can be represented as: setdiff(has a name in it, classified as social moment)
+setdiff(hm_data$original_hm[names_matches_ignore_case],union(intersect(union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet])),hm_data$original_hm[names_matches_ignore_case]),hm_data$original_hm[social_words_matches])) 
+
+#reference to a name and is classified as social moment:  
+#can be thought of as: intersect(has a name in it, classified as a social moment)
+intersect(hm_data$original_hm[names_matches_ignore_case],union(intersect(union(hm_data$original_hm[with],union(union(hm_data$original_hm[and_i],hm_data$original_hm[we]),hm_data$original_hm[meet])),hm_data$original_hm[names_matches_ignore_case]),hm_data$original_hm[social_words_matches])) 
+```
+
+```{r,echo=FALSE}
+#Using the social moment indices determined above, a new variable in the dataset called "type" is created, which classifies the moment as social or individual: 
+type=rep(NA,nrow(hm_data)) #initializes the vector 
+type[social_moments_indices]="social"
+type[not_social_moments_indices]="individual"
+hm_data=data.frame(hm_data[1:11],type) #add to data frame.  [1:11] is used so that if type was already added but needs to be re added because it was updated, it wouldn't save the old type, just the 11 original columns and the new type
+
+df=data.frame(c("Social","Individual"),c(mean(hm_data$type=="social"),mean(hm_data$type=="individual"))) #stores a 2x2 data frame that basically just says social and individual with the proportions of each
+colnames(df)=c("Type","Percentage")
+#use this new dataframe as a plot: 
+ggplot(df,aes(x=Type,y=Percentage,fill="red")) + geom_bar(stat="identity",show.legend=FALSE) + geom_text(aes(x=Type,y=Percentage,label=paste(round(100*Percentage,1),"%"))) + ggtitle ("Percentage of Moments Classified as Social or Individual")
+```
+
+```{r,echo=FALSE, message=FALSE}
+
+#This is a function where you input a wordtype ("word" or "bigram"), and a socialtype ("social" or "individual"), and it will give you the word count or bigram count for that specified subgroup
+word_bigrams=function(wordtype,socialtype)
+{
+    stopifnot(wordtype %in% c("word","bigram"))
+    stopifnot(socialtype %in% c("social","individual"))
+    hm_subset=hm_data[hm_data$type==socialtype,]
+    if (wordtype=="word")
+    {
+        bag_of_words = hm_subset %>%
+        unnest_tokens(word, text)
+
+        word_count = bag_of_words %>%
+        count(word, sort = TRUE)
+        return(word_count)
+    }
+    else
+    {
+        bigrams = hm_subset %>%
+        filter(count != 1) %>%
+        unnest_tokens(bigram, text, token = "ngrams", n = 2)
+
+      bigram_counts = bigrams %>%
+        separate(bigram, c("word1", "word2"), sep = " ") %>%
+        count(word1, word2, sort = TRUE)
+      return (bigram_counts)
+    }
+}
+```
+
+####Most Common Words In Social Moments:
+```{r,echo=FALSE}
+set.seed(1234)
+wordcloud(words = word_bigrams("word","social")$word, freq = word_bigrams("word","social")$n, min.freq = 1,
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+####Most Common Words In Individual Moments:
+```{r, echo=FALSE}
+wordcloud(words = word_bigrams("word","individual")$word, freq = word_bigrams("word","individual")$n, min.freq = 1,
+          max.words=100, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+bigram_social=word_bigrams("bigram","social")[1:20,]
+bigram_social=data.frame(paste(bigram_social$word1,bigram_social$word2),bigram_social$n)
+colnames(bigram_social)=c("Bigram","Frequency")
+bigram_individual=word_bigrams("bigram","individual")[1:20,]
+bigram_individual=data.frame(paste(bigram_individual$word1,bigram_individual$word2),bigram_individual$n)
+colnames(bigram_individual)=c("Bigram","Frequency")
+
+social_plot=ggplot(bigram_social, aes(x=reorder(Bigram,Frequency),y=Frequency,fill="red"))+geom_bar(stat="identity", show.legend = FALSE) +coord_flip() + labs(x=NULL) + ggtitle("Social Moment Bigrams")
+
+indiv_plot=ggplot(bigram_individual, aes(x=reorder(Bigram,Frequency),y=Frequency,fill="red"))+geom_bar(stat="identity", show.legend = FALSE) +coord_flip() + labs(x=NULL) + ggtitle("Indiv. Moment Bigrams")
+
+plot_grid(social_plot,indiv_plot)
+```
+
+
+
+###Section 2: How Are Demographics Related To Moment Types (social vs. individual)?
+
+
+Now that the data has given us an idea of the most common words used in social and individual moments by all types of people, how does a person's gender, marital status, parenthood status, age, and home country relate to what type of moment they wrote about (social or individual)?
+
+```{r,echo=FALSE}
+#Create a vector that shows the proportions of social/individual moments grouped by gender:
+gender_type <- hm_data %>% 
+  group_by(gender,type) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+#stacked percentage barplot to show relationship between gender and moment type:
+gender_plot=ggplot(gender_type,aes(x=gender,y=perc,fill=type)) + geom_bar(stat="identity") + labs(x="gender",y="percentage") + guides(fill=guide_legend(title="Type"))+ggtitle("Gender") + geom_text(aes(gender,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+parenthood_type <- hm_data %>% 
+  group_by(parenthood,type) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+parenthood_plot=ggplot(parenthood_type,aes(x=parenthood,y=perc,fill=type)) + geom_bar(stat="identity")+labs(x="parenthood",y="percentage") + guides(fill=guide_legend(title="Type"))+ggtitle("Parenthood") + geom_text(aes(parenthood,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+marital_type <- hm_data %>% 
+  group_by(marital,type) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+marital_plot=ggplot(marital_type,aes(x=marital,y=perc,fill=type)) + geom_bar(stat="identity") + labs(x="marital status",y="percentage") + guides(fill=guide_legend(title="Type"))+ggtitle("Marital Status") + geom_text(aes(marital,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+usa_type <- hm_data[!is.na(hm_data$country),] %>% 
+  group_by(country=="USA",type) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+colnames(usa_type)=c("Country","type","count","perc")
+usa_type$Country[usa_type$Country==TRUE]="USA"
+usa_type$Country[usa_type$Country==FALSE]="Not USA"
+
+usa_plot=ggplot(usa_type,aes(x=Country,y=perc,fill=type)) + geom_bar(stat="identity") +labs(x="Country",y="percentage") + guides(fill=guide_legend(title="Type"))+ggtitle("Country")+geom_text(aes(Country,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+
+#create discrete age group levels:
+age_less_25=which(hm_data$age<=25)
+age_25_35=which(hm_data$age>25 & hm_data$age<=35)
+age_35_45=which(hm_data$age>35 & hm_data$age<=45)
+age_45_60=which(hm_data$age>45 & hm_data$age<=60)
+age_60_older=which(hm_data$age>60)
+
+age_group=rep(NA,nrow(hm_data))
+age_group[age_less_25]="< 25"
+age_group[age_25_35]="25-35"
+age_group[age_35_45]="35-45"
+age_group[age_45_60]="45-60"
+age_group[age_60_older]="60+"
+hm_data=data.frame(hm_data[1:12],age_group)
+
+
+age_type <- hm_data[!is.na(hm_data$age_group),] %>% 
+  group_by(age_group,type) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+age_plot=ggplot(age_type,aes(x=age_group,y=perc,fill=type)) + geom_bar(stat="identity") + labs(x="Age Group",y="percentage") + guides(fill=guide_legend(title="Type"))+ggtitle("Age Groups") + geom_text(aes(age_group,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+
+plot_grid(gender_plot,usa_plot)
+```
+
+The data shows that females appear to be approximately equally likely to report a social or individual moment, but for males, there were a lot more individual moments.
+
+When organizing the data by country, it appears that people who do not live in the USA are slightly more likely to report a social moment, but people who live in the USA are 1.5 times as likely to report an individual moment.
+```{r, echo=FALSE}
+age_plot
+```
+
+The data also shows that as people get older, they are more likely to report a social moment.  The gap between individual and social gets smaller as the age groups increase.  Could this likely be because of parenthood and marital status?  
+
+```{r, echo=FALSE}
+plot_grid(parenthood_plot,marital_plot)
+```
+
+
+
+Indeed, those who are parents and those who are married both had a higher rate of social moments, and the non-parents and the singles much more often reported an individual moment.  Since the results for parenthood and marital status were strikingly similar, I decided to go further and see how much overlap there is between these two groups.
+
+
+```{r,echo=FALSE}
+library(dplyr)
+marital_parenthood <- hm_data %>% 
+  group_by(marital,parenthood) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+ggplot(marital_parenthood,aes(marital,perc,fill=parenthood)) + geom_bar(stat="identity")+labs(x="marital status",y="percentage") + guides(fill=guide_legend(title="Parenthood"))+ggtitle("Percentage of Single and Married People That Are Parents") + geom_text(aes(marital,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+```
+
+According to this plot, there is a large overlap between these two groups.  Most of the married people are parents, and almost none of the single people are parents.  So it makes sense that the distribution of social and individual classifications would be similar for both groups.  
+
+So in summary, the largest social groups from this analysis were older people, married people, parents, females, and non-Americans.  My hypothesis going into this project was that younger people would have more social moments because it is that generation and age group that craves the excitement of a party or being surrounded by friends, and it seems like the adults are the ones that value their alone time more.  However, this data shows that it is the older people, married people, and parents that are more likely to highlight their social activities, which could likely be due to the fact that these people are very family-oriented.  If a mother is asked about a happy moment she had, she is likely to say something about her child.  
+
+
+###Section 3: What Does the Data Say About Moments With People's Names In It?
+
+
+In addition to just social vs. individual moments for each category, the data also gives some information on whether or not the moment had a name in it.  What does the data say about how often a name was mentioned in a moment, and in these moments, how many did not have any reference to a social event?  
+
+```{r, echo=FALSE}
+#NAME ANALYSIS CHUNK
+
+#categorize whether a moment has a name in it or not:
+name=rep(NA,nrow(hm_data))
+name[names_matches_ignore_case]="Has Name"
+name[-names_matches_ignore_case]="No Name"
+
+hm_data=data.frame(hm_data[,1:13],name)
+
+name_perc <- hm_data %>% 
+  group_by(name) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+num_names=ggplot(name_perc,aes(x=name, y = perc, fill = "red"))+geom_bar(stat="identity",show.legend=FALSE) + labs(y="percentage") + ggtitle ("% Moments W/ Names") + geom_text(aes(name,perc,label=paste(round(100*perc,1),"%")))
+
+name_type <- hm_data %>% 
+  group_by(name,type) %>% 
+  summarise(count=n()) %>% 
+  mutate(perc=count/sum(count))
+
+name_plot=ggplot(name_type,aes(x=name,y=perc,fill=type)) + geom_bar(stat="identity") + labs(x=NULL,y="percentage") + guides(fill=guide_legend(title="Type"))+ggtitle("Moment Type With/Without Names") + geom_text(aes(name,perc,label=paste(round(100*perc,1),"%")),position=position_stack(vjust=0.5))
+
+plot_grid(num_names,name_plot)
+```
+
+The data shows that very few people include people's names when describing their moment.  But almost half of the moments with names are not even social moments. If these people are not using a name to refer to a friend or family member, then what are they using it for?  
+
+For all individual moments that include a name, here are the most common bigrams that include names, which would show which name was used in this moment: 
+
+```{r, echo=FALSE, message=FALSE}
+#Wrote a function that subsets the data into only moments that have a name in it, and then you can view the word count and bigram count for both social and individual moments.  
+#only bigrams for individual moments were used in the output, but anyone who uses the code can use the function to look up another one (social bigrams, social words, etc)
+#For inputs, wordtype is either "word" or "bigram" and socialtype is "social" or "individual"
+names_func=function(wordtype,socialtype)
+{
+    stopifnot(wordtype %in% c("word","bigram"))
+    stopifnot(socialtype %in% c("social","individual"))
+    hm_names=hm_data[names_matches_ignore_case,]
+    hm_subset=hm_names[hm_names$type==socialtype,]
+    if (wordtype=="word")
+    {
+        bag_of_words = hm_subset %>%
+        unnest_tokens(word, text)
+
+        word_count = bag_of_words %>%
+        count(word, sort = TRUE)
+        return(word_count)
+    }
+    else
+    {
+        bigrams = hm_subset %>%
+        filter(count != 1) %>%
+        unnest_tokens(bigram, text, token = "ngrams", n = 2)
+
+      bigram_counts = bigrams %>%
+        separate(bigram, c("word1", "word2"), sep = " ") %>%
+        count(word1, word2, sort = TRUE)
+      return (bigram_counts)
+    }
+}
+indiv_names=names_func("bigram","individual")
+word1name=indiv_names[tolower(indiv_names$word1) %in% tolower(names),]
+word2name=indiv_names[tolower(indiv_names$word2) %in% tolower(names),]
+word12name=rbind(word1name,word2name)
+bigram_indiv_name=word12name[order(word12name$n,decreasing=TRUE),]
+bigram_indiv_name=data.frame(paste(word12name$word1,word12name$word2),word12name$n)[1:26,]
+colnames(bigram_indiv_name)=c("Bigram","Frequency")
+
+ggplot(bigram_indiv_name, aes(x=reorder(Bigram,Frequency),y=Frequency,fill="red"))+geom_bar(stat="identity", show.legend = FALSE) +coord_flip() + labs(x=NULL) + ggtitle("Most Common Bigrams From Individual Moments With Names")
+```
+
+As shown, many of these are names that function as regular words as well.  For example, "sunny day", "summer vacation", "major league", "april fools", etc.  Since these names are not meant to refer to a person, it is good that these phrases were not classified as social moments.   
+There are also some company names in here such as Ben and Jerry's and Jack in the Box (Jack in the Box is not shown in these first 26 because it's further down the list), which include people's names but do not necessarily refer to a social event.  Since these are classified as individual moments, these people likely went to these places alone.  
+Another major category is celebrity's names. A person is mentioned in these moments but it isn't in a social context.  Some examples from here are Kendrick Lamar and Donald Trump. 
+
+The final category I notice is names related to movies.  Some of these bigrams include "Logan movie", "Harry Potter", and "John Wick".   
+
+
+In conclusion, this data shows that there are slightly more individual moments in this dataset than social moments, but it is pretty close to equal.  The groups that are more likely to highlight a social moment in the past 24 hours are females, older people, married people, parents, and people that do not live in the USA.  The other groups tended to talk more about individual moments.  Most people did not include any names in their moments, even when describing social events, but for the moments that did include names, only half of them actually referred to social events; for the rest, the names were used to describe movie titles, celebrities, or company names, or were names that are also common everyday words (jack, sunny, miles).
